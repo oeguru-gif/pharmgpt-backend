@@ -308,7 +308,7 @@ def root():
         "message": "PharmaGPT API - AI-powered pharmaceutical assistance",
         "status": "healthy",
         "ai_enabled": HAS_AI,
-        "database": "connected" if db else "fallback",
+       "database": "connected" if db is not None else "fallback",
         "features": ["AI Chat", "Image Analysis Types", "Expert Consultants"],
         "version": "2.0.0-enhanced"
     }
@@ -319,9 +319,9 @@ def api_root():
         "message": "PharmaGPT API - Ready for pharmaceutical assistance", 
         "ai_enabled": HAS_AI
     }
-
 @app.on_event("startup")
 async def startup():
     print("🚀 PharmaGPT API Enhanced v2.0 starting...")
     print(f"🤖 AI Features: {'Enabled with OpenAI' if HAS_AI else 'Disabled'}")
-    print(f"🗄️ Database: {'Connected' if db else 'Fallback mode'}")
+    print(f"🗄️ Database: {'Connected' if db is not None else 'Fallback mode'}")
+
