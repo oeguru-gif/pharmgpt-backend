@@ -4,15 +4,15 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import uuid
 from datetime import datetime
 
 # Import AI functionality
 try:
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    import openai
     HAS_AI = True
-    print("✅ AI integration loaded successfully")
+    print("✅ OpenAI integration loaded successfully")
 except ImportError:
     HAS_AI = False
     print("❌ AI integration not available")
@@ -68,6 +68,7 @@ def get_pharma_system_message(regulatory_context: str = "GMP"):
     return f"""You are PharmaGPT, an expert AI assistant specialized in pharmaceutical quality, R&D, and API manufacturing. You have deep knowledge of:
 
 REGULATORY STANDARDS: {regulatory_context}, ISO standards, USFDA, KFDA, EDQM, and PMDA requirements
+
 EXPERTISE AREAS:
 - API (Active Pharmaceutical Ingredient) manufacturing processes
 - Process troubleshooting and batch failure analysis
@@ -82,16 +83,9 @@ RESPONSE GUIDELINES:
 - Include relevant regulatory considerations
 - Suggest investigation approaches when troubleshooting
 - Reference appropriate industry standards and guidelines
-- Focus on practical solutions for pharmaceutical professionals
+- Focus on practical solutions for pharmaceutical professionals"""
 
-When discussing process issues, always consider:
-1. Root cause analysis approaches
-2. Risk assessment implications
-3. Regulatory reporting requirements
-4. CAPA (Corrective and Preventive Actions) recommendations
-5. Impact on product quality and patient safety"""
-
-# Enhanced Chat endpoint with AI
+# Enhanced Chat endpoint with OpenAI
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_with_ai(request: ChatRequest):
     try:
@@ -100,32 +94,34 @@ async def chat_with_ai(request: ChatRequest):
             user_message_doc = ChatMessage(
                 session_id=request.session_id,
                 message=request.message,
-                sender="user",
-                regulatory_context=request.regulatory_context
+                sender="user"
             ).dict()
             await db.chat_messages.insert_one(user_message_doc)
         
         # Get AI response if available
         if HAS_AI and os.environ.get('EMERGENT_LLM_KEY'):
-            system_message = get_pharma_system_message(request.regulatory_context or "GMP")
-            
-            chat = LlmChat(
-                api_key=os.environ['EMERGENT_LLM_KEY'],
-                session_id=request.session_id,
-                system_message=system_message
-            ).with_model("openai", "gpt-4o-mini")
-            
-            user_msg = UserMessage(text=request.message)
-            ai_response = await chat.send_message(user_msg)
+            try:
+                openai_client = openai.OpenAI(api_key=os.environ['EMERGENT_LLM_KEY'])
+                
+                system_message = get_pharma_system_message(request.regulatory_context or "GMP")
+                
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": request.message}
+                    ],
+                    max_tokens=1000,
+                    temperature=0.7
+                )
+                
+                ai_response = response.choices[0].message.content
+                
+            except Exception as e:
+                print(f"OpenAI Error: {e}")
+                ai_response = generate_fallback_response(request.message, request.regulatory_context)
         else:
-            # Fallback response
-            ai_response = f"Thank you for your pharmaceutical question: '{request.message}'. "
-            if "batch failure" in request.message.lower():
-                ai_response += "For batch failures, follow systematic investigation: 1) Review batch records, 2) Check raw materials, 3) Verify equipment calibration, 4) Assess environmental conditions, 5) Perform root cause analysis."
-            elif "gmp" in request.message.lower():
-                ai_response += f"For {request.regulatory_context} compliance, ensure proper documentation, quality systems, and continuous monitoring."
-            else:
-                ai_response += "I'm ready to help with pharmaceutical quality, regulatory compliance, and manufacturing guidance."
+            ai_response = generate_fallback_response(request.message, request.regulatory_context)
         
         # Store AI response
         if db:
@@ -137,11 +133,7 @@ async def chat_with_ai(request: ChatRequest):
             await db.chat_messages.insert_one(ai_message_doc)
         
         # Generate suggestions
-        suggestions = []
-        if "batch failure" in request.message.lower():
-            suggestions = ["Perform 5-Why analysis", "Review critical parameters", "Check equipment calibration"]
-        elif "regulatory" in request.message.lower():
-            suggestions = ["Review compliance status", "Check recent updates", "Prepare documentation"]
+        suggestions = generate_suggestions(request.message)
         
         return ChatResponse(
             response=ai_response,
@@ -152,6 +144,84 @@ async def chat_with_ai(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
+def generate_fallback_response(message: str, regulatory_context: str = "GMP"):
+    """Generate intelligent fallback responses for pharmaceutical queries"""
+    message_lower = message.lower()
+    
+    if "batch failure" in message_lower or "batch failed" in message_lower:
+        return f"""For batch failure investigation, I recommend following a systematic approach:
+
+1. **Immediate Assessment**: Secure and quarantine the affected batch
+2. **Documentation Review**: Examine batch records, raw material certificates, and process parameters
+3. **Root Cause Analysis**: Use 5-Why or Fishbone methodology to identify underlying causes
+4. **Equipment Verification**: Check calibration status and maintenance records
+5. **Environmental Factors**: Review temperature, humidity, and facility conditions
+6. **{regulatory_context} Compliance**: Ensure investigation follows regulatory requirements
+7. **CAPA Implementation**: Develop corrective and preventive actions
+
+Would you like me to elaborate on any specific aspect of the investigation?"""
+
+    elif "gmp" in message_lower or "compliance" in message_lower:
+        return f"""For {regulatory_context} compliance, key focus areas include:
+
+**Documentation & Records**:
+- Complete and accurate batch records
+- Equipment calibration and maintenance logs
+- Personnel training documentation
+- Change control procedures
+
+**Quality Systems**:
+- Robust quality management system
+- Risk assessment processes
+- Deviation and CAPA management
+- Supplier qualification and monitoring
+
+**Process Controls**:
+- Critical process parameter monitoring
+- In-process testing and release procedures
+- Environmental monitoring programs
+- Cleaning validation
+
+How can I assist you with specific compliance requirements?"""
+
+    else:
+        return f"""Thank you for your pharmaceutical question: "{message}"
+
+As PharmaGPT, I'm specialized in:
+- API manufacturing and process troubleshooting
+- Quality assurance and {regulatory_context} compliance
+- Regulatory documentation and submissions
+- Investigation methodologies (5-Why, Fishbone, CAPA)
+- Process optimization and validation
+
+Please provide more specific details about your challenge, and I'll offer targeted pharmaceutical expertise and actionable recommendations."""
+
+def generate_suggestions(message: str):
+    """Generate contextual suggestions based on user message"""
+    message_lower = message.lower()
+    
+    if "batch failure" in message_lower:
+        return [
+            "Perform 5-Why root cause analysis",
+            "Review critical process parameters", 
+            "Check equipment calibration records",
+            "Assess environmental conditions"
+        ]
+    elif "gmp" in message_lower or "compliance" in message_lower:
+        return [
+            "Review current compliance status",
+            "Update documentation procedures",
+            "Schedule internal audit",
+            "Check regulatory updates"
+        ]
+    else:
+        return [
+            "Ask about batch failures",
+            "Inquire about GMP compliance", 
+            "Request process guidance",
+            "Get contamination help"
+        ]
+
 # Image Analysis Types
 @app.get("/api/image-analysis/types")
 def get_analysis_types():
@@ -159,32 +229,32 @@ def get_analysis_types():
         "laboratory_results": {
             "name": "Laboratory Results Analysis",
             "description": "Analyze test results, chromatograms, spectra, and analytical data",
-            "focus_areas": ["accuracy", "precision", "method validation"]
+            "focus_areas": ["accuracy", "precision", "method validation", "out-of-specification results"]
         },
         "product_quality": {
             "name": "Product Quality Assessment", 
-            "description": "Evaluate tablet/capsule appearance, packaging, and defects",
-            "focus_areas": ["appearance", "uniformity", "contamination"]
+            "description": "Evaluate tablet/capsule appearance, packaging, and physical defects",
+            "focus_areas": ["appearance", "uniformity", "contamination", "packaging integrity"]
         },
         "equipment_readings": {
-            "name": "Equipment Analysis",
-            "description": "Assess equipment displays and monitoring data",
-            "focus_areas": ["calibration", "trends", "maintenance"]
+            "name": "Equipment & Instrument Analysis",
+            "description": "Assess equipment displays, calibration records, and monitoring data",
+            "focus_areas": ["calibration status", "alarm conditions", "trend analysis", "maintenance needs"]
         },
         "process_monitoring": {
             "name": "Process Monitoring",
-            "description": "Review control charts and manufacturing data",
-            "focus_areas": ["control", "deviations", "analysis"]
+            "description": "Review process control charts, batch records, and manufacturing data",
+            "focus_areas": ["process control", "trend analysis", "deviation identification", "statistical analysis"]
         },
         "document_analysis": {
             "name": "Document Analysis", 
-            "description": "Analyze regulatory documents and procedures",
-            "focus_areas": ["compliance", "completeness", "validation"]
+            "description": "Analyze regulatory documents, procedures, and compliance records",
+            "focus_areas": ["compliance review", "document completeness", "regulatory requirements", "format validation"]
         },
         "contamination_assessment": {
             "name": "Contamination Assessment",
-            "description": "Identify and assess contamination issues",
-            "focus_areas": ["identification", "risk", "remediation"]
+            "description": "Identify and assess microbial, particulate, or chemical contamination",
+            "focus_areas": ["contamination identification", "source investigation", "risk assessment", "remediation recommendations"]
         }
     }
 
@@ -239,15 +309,19 @@ def root():
         "status": "healthy",
         "ai_enabled": HAS_AI,
         "database": "connected" if db else "fallback",
-        "features": ["AI Chat", "Image Analysis Types", "Expert Consultants"]
+        "features": ["AI Chat", "Image Analysis Types", "Expert Consultants"],
+        "version": "2.0.0-enhanced"
     }
 
 @app.get("/api/")
 def api_root():
-    return {"message": "PharmaGPT API - Ready for pharmaceutical assistance", "ai_enabled": HAS_AI}
+    return {
+        "message": "PharmaGPT API - Ready for pharmaceutical assistance", 
+        "ai_enabled": HAS_AI
+    }
 
 @app.on_event("startup")
 async def startup():
-    print("🚀 PharmaGPT API starting...")
-    print(f"🤖 AI Features: {'Enabled' if HAS_AI else 'Disabled'}")
+    print("🚀 PharmaGPT API Enhanced v2.0 starting...")
+    print(f"🤖 AI Features: {'Enabled with OpenAI' if HAS_AI else 'Disabled'}")
     print(f"🗄️ Database: {'Connected' if db else 'Fallback mode'}")
