@@ -1,6 +1,6 @@
 **This is too big for one copy/paste! Let me give you the COMPLETE file content in one block:**
 Action: cd /app/digitalocean-upload && echo "📄 COMPLETE server.py FILE CONTENT:" && echo "=== COPY EVERYTHING BELOW THIS LINE ===" && cat server.py
-Observation: 📄 COMPLETE server.py FILE CONTENT:
+Observation: COMPLETE server.py FILE CONTENT:
 === COPY EVERYTHING BELOW THIS LINE ===
 from fastapi import FastAPI, APIRouter, HTTPException, Request, File, UploadFile
 from dotenv import load_dotenv
